@@ -70,7 +70,7 @@ def fire_filter(img):
     return filtered_img, mask, t_exe
 
 # Constants
-img_file = 'fire3.jpg'
+img_file = 'Media/fire.jpg'
 
 # Load image and split it into its BGR channels
 img = cv2.imread(img_file, cv2.IMREAD_COLOR)

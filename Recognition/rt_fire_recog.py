@@ -1,4 +1,8 @@
 import cv2
+import numpy as np
+import requests
+from threading import Thread
+import time
 
 
 # Helper function to quickly show images
@@ -6,6 +10,7 @@ def show_img(img, win_name):
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.imshow(win_name, img)
 
+# Void function for cv2 trackbars
 def onChange(arg):
     pass
 
@@ -69,11 +74,12 @@ def fire_filter(img):
     # Return mask
     return filtered_img, mask
 
+# Given an image, returns smoke filtered image
 def smoke_filter(img, prev_img):
     r1_rgb_threshold = 20
     r2a_s_threshold = 0.1 * 255
-    # r2b_s_threshold = 10
-    r2b_s_threshold = cv2.getTrackbarPos("smoke", trackbar_win)
+    r2b_s_threshold = 10
+    # r2b_s_threshold = cv2.getTrackbarPos("smoke", trackbar_win)
     # Rule 1 - RGB absdiffs less than threshold
     b_img, g_img, r_img = cv2.split(img)
     r1_rg_diff = cv2.absdiff(r_img, g_img)
@@ -99,34 +105,140 @@ def smoke_filter(img, prev_img):
     filtered_img = cv2.bitwise_and(img, img, mask=mask)
     return filtered_img, mask
 
-cam_index = 0
-trackbar_win = "parameters"
+def fire_risk(fire_img, fire_mask):
+    mask_blur = cv2.GaussianBlur(fire_mask, ksize=(3,3), sigmaX=0)
+    mask_count = cv2.countNonZero(mask_blur)
+    if mask_count / mask_blur.size > 0.05:
+        return 1
+    return 0
 
-cam = cv2.VideoCapture(cam_index)
-cv2.namedWindow('original_name', cv2.WINDOW_NORMAL)
-cv2.namedWindow('fire_filtered', cv2.WINDOW_NORMAL)
-cv2.namedWindow('smoke_filtered', cv2.WINDOW_NORMAL)
-cv2.namedWindow('parameters')
 
-cv2.createTrackbar("smoke", trackbar_win, 0, 255, onChange)
+cam_sources = [1, "media/forest_view3.mp4", "media/forest_fire3.mp4"]
+# cam_sources = [1]
+cams = [cv2.VideoCapture(index) for index in cam_sources]
+for i in range(len(cams)):
+    cv2.namedWindow("Monitor {}".format(i), cv2.WINDOW_NORMAL)
 
-ret, image = cam.read()
-prev_image = image
+first_run = True
+prev_images = []
+url_feed = "http://a10f896c.ngrok.io/feed"
+fires = [0 for _ in range(len(cams))]
 
-while ret:
+class Updater:
+    def __init__(self, url):
+        self.stopped = False
+        self.url = url
 
-    fire_img, fire_mask = fire_filter(image)
-    smoke_img, smoke_mask = smoke_filter(image, prev_image)
+    def start(self):
+        t = Thread(target=self.update, args=())
+        t.daemon = True
+        t.start()
+        return self
 
-    cv2.imshow('original_name', image)
-    cv2.imshow('fire_filtered', fire_img)
-    cv2.imshow('smoke_filtered', smoke_img)
+    def update(self):
+        global fires
+        while True:
+            if self.stopped:
+                return
+            payload = {
+                "cameras": [{"id": i + 1, "status": fire}
+                            for i, fire in enumerate(fires)]
+            }
+            print("Sending data: {}".format(payload))
+            r = requests.post(self.url, data=payload)
+            time.sleep(5)
 
-    prev_image = image
-    ret, image = cam.read()
+    def stop(self):
+        self.stopped = True
 
-    k = cv2.waitKey(20)
+cam_updater = Updater(url_feed)
+cam_updater.start()
+
+while True:
+    rets, images = [], []
+    for i, cam in enumerate(cams):
+        if cam.isOpened():
+            ret_temp, img_temp = cam.read()
+            rets.append(ret_temp)
+            images.append(img_temp)
+            if first_run:
+                prev_images.append(img_temp)
+        else:
+            cam = cv2.VideoCapture(cam_sources[i])
+    # Filter each image
+    fire_imgs, fire_masks = list(zip(*[fire_filter(image) for image in images]))
+    smoke_imgs, smoke_masks = list(zip(*[smoke_filter(image, prev_image) for image, prev_image in zip(images, prev_images)]))
+    fires = [fire_risk(*fire_img_mask) for fire_img_mask in zip(fire_imgs, fire_masks)]
+    # Create blanks and join images
+    blanks = [np.zeros(image.shape, np.uint8) for image in images]
+    # Change notification to red in case of fire
+    for i, fire in enumerate(fires):
+        if fire:
+            b, g, r = cv2.split(blanks[i])
+            r_new = np.ones(r.shape, dtype=r.dtype) * 255
+            blanks[i] = cv2.merge((b, g, r_new))
+    originals = [np.concatenate(original_blank, axis=0) for original_blank in zip(images, blanks)]
+    results = [np.concatenate(fire_smoke, axis=0) for fire_smoke in zip(fire_imgs, smoke_imgs)]
+    # Form final images
+    final_images = [np.concatenate(original_result, axis=1) for original_result in zip(originals, results)]
+    for i, final_image in enumerate(final_images):
+        cv2.imshow("Monitor {}".format(i), final_image)
+    prev_images = images
+    k = cv2.waitKey(29)
     if k == 27:
         break
 
+for cam in cams:
+    cam.release()
+cam_updater.stop()
 cv2.destroyAllWindows()
+
+#
+#
+# cam_index = 1
+# trackbar_win = "parameters"
+# video_debug = False
+# out = None
+#
+# cam = cv2.VideoCapture(cam_index)
+# # cv2.namedWindow('original_name', cv2.WINDOW_NORMAL)
+# # cv2.namedWindow('fire_filtered', cv2.WINDOW_NORMAL)
+# # cv2.namedWindow('smoke_filtered', cv2.WINDOW_NORMAL)
+# cv2.namedWindow('Monitor', cv2.WINDOW_NORMAL)
+# # cv2.namedWindow('parameters')
+# # cv2.createTrackbar("smoke", trackbar_win, 0, 255, onChange)
+#
+# if video_debug:
+#     fourcc = cv2.VideoWriter_fourcc(*'XVID')
+#     name = 'media/out.avi'
+#     out = cv2.VideoWriter(name, fourcc, fps=30.0, frameSize=(1920, 1080))
+#
+# ret, image = cam.read()
+# prev_image = image
+#
+# while ret:
+#     # Pass image through fire and smoke filter
+#     fire_img, fire_mask = fire_filter(image)
+#     smoke_img, smoke_mask = smoke_filter(image, prev_image)
+#     # Create blank image
+#     blank = np.ones(image.shape, np.uint8)
+#     # Append images and results
+#     results = np.concatenate((fire_img, smoke_img), axis=1)
+#     original = np.concatenate((image, blank), axis=1)
+#     final_image = np.concatenate((original, results), axis=0)
+#     cv2.imshow('Monitor', final_image)
+#     # cv2.imshow('original_name', image)
+#     # cv2.imshow('fire_filtered', fire_img)
+#     # cv2.imshow('smoke_filtered', smoke_img)
+#     if video_debug:
+#         out.write(final_image)
+#     ret, image = cam.read()
+#     prev_image = image
+#     k = cv2.waitKey(20)
+#     if k == 27:
+#         break
+#
+# cam.release()
+# if video_debug:
+#     out.release()
+# cv2.destroyAllWindows()
