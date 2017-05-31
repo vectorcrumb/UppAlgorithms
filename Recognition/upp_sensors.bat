@@ -1,0 +1,2 @@
+python sensors.py
+pause

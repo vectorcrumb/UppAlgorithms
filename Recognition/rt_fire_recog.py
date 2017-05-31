@@ -105,6 +105,7 @@ def smoke_filter(img, prev_img):
     filtered_img = cv2.bitwise_and(img, img, mask=mask)
     return filtered_img, mask
 
+# Detect fire given an image
 def fire_risk(fire_img, fire_mask):
     mask_blur = cv2.GaussianBlur(fire_mask, ksize=(3,3), sigmaX=0)
     mask_count = cv2.countNonZero(mask_blur)
@@ -113,15 +114,15 @@ def fire_risk(fire_img, fire_mask):
     return 0
 
 
-cam_sources = [1, "media/forest_view3.mp4", "media/forest_fire3.mp4"]
-# cam_sources = [1]
+cam_sources = [1]
 cams = [cv2.VideoCapture(index) for index in cam_sources]
 for i in range(len(cams)):
     cv2.namedWindow("Monitor {}".format(i), cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Monitor {}".format(i), 960-100, 540-100)
 
 first_run = True
 prev_images = []
-url_feed = "http://a10f896c.ngrok.io/feed"
+url_feed = "http://e5aa819f.ngrok.io/feed"
 fires = [0 for _ in range(len(cams))]
 
 class Updater:
@@ -145,8 +146,8 @@ class Updater:
                             for i, fire in enumerate(fires)]
             }
             print("Sending data: {}".format(payload))
-            r = requests.post(self.url, data=payload)
-            time.sleep(5)
+            r = requests.post(self.url, json=payload)
+            time.sleep(1)
 
     def stop(self):
         self.stopped = True
@@ -164,10 +165,16 @@ while True:
             if first_run:
                 prev_images.append(img_temp)
         else:
-            cam = cv2.VideoCapture(cam_sources[i])
+            cams.remove(cam)
     # Filter each image
-    fire_imgs, fire_masks = list(zip(*[fire_filter(image) for image in images]))
-    smoke_imgs, smoke_masks = list(zip(*[smoke_filter(image, prev_image) for image, prev_image in zip(images, prev_images)]))
+    for ret in rets:
+        if not ret:
+            break
+    try:
+        fire_imgs, fire_masks = list(zip(*[fire_filter(image) for image in images]))
+        smoke_imgs, smoke_masks = list(zip(*[smoke_filter(image, prev_image) for image, prev_image in zip(images, prev_images)]))
+    except ValueError:
+        break
     fires = [fire_risk(*fire_img_mask) for fire_img_mask in zip(fire_imgs, fire_masks)]
     # Create blanks and join images
     blanks = [np.zeros(image.shape, np.uint8) for image in images]
@@ -192,6 +199,12 @@ for cam in cams:
     cam.release()
 cam_updater.stop()
 cv2.destroyAllWindows()
+fires = [0, 0, 0]
+payload = {
+    "cameras": [{"id": i + 1, "status": fire} for i, fire in enumerate(fires)]
+}
+r = requests.post(url_feed, json=payload)
+print("Shut off fires!\n{}".format(r))
 
 #
 #

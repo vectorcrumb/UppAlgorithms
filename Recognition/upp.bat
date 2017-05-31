@@ -1,0 +1,2 @@
+python rt_fire_recog.py
+pause
